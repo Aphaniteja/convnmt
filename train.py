@@ -137,6 +137,8 @@ def get_data():
 
 def train(model, train_dl, valid_dl, opt, epochs=1):
     for epoch in range(epochs):
+        model.train()
+        tot_tr_loss = 0
         for x, y in train_dl:
             input = model(x.unsqueeze(1))
             input = input.reshape(x.shape[0], 36, -1)
@@ -144,7 +146,18 @@ def train(model, train_dl, valid_dl, opt, epochs=1):
             opt.zero_grad()
             loss.backward()
             opt.step()
-            print(loss.item())
+            tot_tr_loss += loss.item()
+
+        model.eval()
+        with torch.no_grad():
+            tot_valid_loss = 0
+            for x, y in valid_dl:
+                input = model(x.unsqueeze(1))
+                input = input.reshape(x.shape[0], 36, -1)
+                loss = seq2seq_loss(input, y)
+                tot_valid_loss += loss.item()
+
+        print(epoch, tot_tr_loss / len(train_dl), tot_valid_loss / len(valid_dl))
 
 
 def main():
