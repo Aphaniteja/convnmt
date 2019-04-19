@@ -4,30 +4,26 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch import tensor, LongTensor
 from torch.utils.data import DataLoader
-import numpy
 from bert_embedding import BertEmbedding
 from pickle import load
 from pickle import dump
 from collections import Counter
-
-bert_embedding = BertEmbedding()
+import argparse
+bert_embedding = BertEmbedding(max_seq_length=75)
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 
 def load_clean_sentences(filename):
     return load(open(filename, 'rb'))
 
 
-def bert_to_tensor(result, nonzero=False):
-    embeds = list(zip(*result))[1]
-    x, y = len(np.nonzero(embeds)[0]), 768
-    if nonzero:
-        x = len((embeds))
-    tens = torch.empty(x, y)
+def bert_to_tensor(result):
+    embeds = result[0][1]
+    tens = torch.empty(len(embeds), 768)
     idx = 0
     for k in embeds:
-        if k:
-            tens[idx] = tensor(k[0])
-            idx += 1
+        tens[idx] = tensor(k)
+        idx += 1
     return tens
 
 
@@ -37,7 +33,7 @@ class Dataset:
         self.y = y
 
     def __getitem__(self, idx):
-        en_sequence = self.x[idx].replace(" ", "")
+        en_sequence = self.x[idx]
         fr_sequence = self.y[idx]
         return en_sequence, fr_sequence
 
@@ -47,12 +43,12 @@ class Dataset:
 
 def seq2seq_collate_bert(samples, pad_first=False, backwards=False):
     pad_idx = 0
-    max_len_x, max_len_y = max([len(s[0]) for s in samples]), max([len(s[1]) for s in samples])
+    max_len_x, max_len_y = max([len(s[0].split()) for s in samples]), max([len(s[1]) for s in samples])
     res_x = torch.zeros(len(samples), max_len_x, 768).float() + pad_idx
     res_y = torch.zeros(len(samples), max_len_y).long() + pad_idx
     for i, s in enumerate(samples):
-        vec = bert_to_tensor(bert_embedding(s[0]), True)
-        res_x[i, :len(s[0])] = vec
+        vec = bert_to_tensor(bert_embedding([s[0]]))
+        res_x[i, :len(s[0].split())] = vec
         res_y[i, :len(s[1]):] = LongTensor(s[1])
     return res_x, res_y
 
@@ -120,7 +116,7 @@ class BasicBlock(nn.Module):
         return out
 
 
-def get_data():
+def get_data(bs):
     en_subset_sentences_train = load_clean_sentences("en_train.pkl")
     en_subset_sentences_valid = load_clean_sentences("en_valid.pkl")
     fr_sentences_tokens_train = load_clean_sentences("fr_train.pkl")
@@ -129,8 +125,8 @@ def get_data():
     train_dataset = Dataset(en_subset_sentences_train, fr_sentences_tokens_train)
     valid_dataset = Dataset(en_subset_sentences_valid, fr_sentences_tokens_valid)
 
-    train_dl = get_dls(train_dataset, seq2seq_collate_bert, 2)
-    valid_dl = get_dls(valid_dataset, seq2seq_collate_bert, 2)
+    train_dl = get_dls(train_dataset, seq2seq_collate_bert, bs)
+    valid_dl = get_dls(valid_dataset, seq2seq_collate_bert, bs)
 
     return train_dl, valid_dl
 
@@ -140,6 +136,7 @@ def train(model, train_dl, valid_dl, opt, epochs=1):
         model.train()
         tot_tr_loss = 0
         for x, y in train_dl:
+            x, y = x.to(device), y.to(device)
             input = model(x.unsqueeze(1))
             input = input.reshape(x.shape[0], 36, -1)
             loss = seq2seq_loss(input, y)
@@ -147,11 +144,12 @@ def train(model, train_dl, valid_dl, opt, epochs=1):
             loss.backward()
             opt.step()
             tot_tr_loss += loss.item()
-
+            print(loss.item())
         model.eval()
         with torch.no_grad():
             tot_valid_loss = 0
             for x, y in valid_dl:
+                x, y = x.to(device), y.to(device)
                 input = model(x.unsqueeze(1))
                 input = input.reshape(x.shape[0], 36, -1)
                 loss = seq2seq_loss(input, y)
@@ -161,14 +159,18 @@ def train(model, train_dl, valid_dl, opt, epochs=1):
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-bs", "--batch_size", type=int, help="batch_size", default=2)
+    args = parser.parse_args()
+
     model = nn.Sequential(BasicBlock(1, 64),
                           nn.Conv2d(64, 512, 3, padding=1),
-                          nn.AdaptiveMaxPool3d((1, 36, 58802)))
+                          nn.AdaptiveMaxPool3d((1, 36, 58802))).to(device)
 
     opt = torch.optim.Adam(model.parameters())
-
-    train_dl, valid_dl = get_data()
-    print("before training")
+    batch_size = args.batch_size
+    train_dl, valid_dl = get_data(batch_size)
+    print("before training", batch_size)
     train(model, train_dl, valid_dl, opt, epochs=1)
 
 
